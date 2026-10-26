@@ -1,0 +1,20 @@
+{
+  "name": "weread-mcp",
+  "version": "0.2.1",
+  "private": true,
+  "type": "module",
+  "description": "微信读书 · 远程 MCP 服务端（Cloudflare Workers，Streamable HTTP）",
+  "main": "src/index.js",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "dependencies": {
+    "@cloudflare/workerd-windows-64": "^1.20261005.1",
+    "@esbuild/win32-x64": "^0.28.2",
+    "@modelcontextprotocol/sdk": "^1.32.1"
+  },
+  "devDependencies": {
+    "wrangler": "^4.0.0"
+  }
+}
