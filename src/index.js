@@ -1200,10 +1200,12 @@ export default {
     let authorized = !!(env.OAUTH_DB && await verifyAccessToken(request, env, String(env.OAUTH_ISSUER || new URL(request.url).origin).replace(/\/$/, "") + "/mcp"));
     if (!authorized && env.MCP_AUTH_TOKEN && got === env.MCP_AUTH_TOKEN) authorized = true;
     if (!authorized && (env.MCP_AUTH_TOKEN || env.OAUTH_DB)) {
-      const headers = env.OAUTH_DB ? {
-        "WWW-Authenticate": `Bearer resource_metadata="${String(env.OAUTH_ISSUER || new URL(request.url).origin).replace(/\/$/, "")}/.well-known/oauth-protected-resource/mcp"`,
-      } : {};
-      return json({ jsonrpc: "2.0", error: { code: -32001, message: "unauthorized" }, id: null }, 401, headers);
+      const response = json({ jsonrpc: "2.0", error: { code: -32001, message: "unauthorized" }, id: null }, 401);
+      if (env.OAUTH_DB) {
+        const issuer = String(env.OAUTH_ISSUER || new URL(request.url).origin).replace(/\/$/, "");
+        response.headers.set("WWW-Authenticate", `Bearer resource_metadata="${issuer}/.well-known/oauth-protected-resource/mcp"`);
+      }
+      return response;
     }
 
     try {
