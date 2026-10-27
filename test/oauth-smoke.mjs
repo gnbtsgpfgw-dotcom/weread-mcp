@@ -51,6 +51,8 @@ const metadata = await res.json();
 assert.equal(metadata.code_challenge_methods_supported[0], "S256");
 assert.ok(metadata.scopes_supported.includes("offline_access"));
 
+res = await oauthRoute(req("/register", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ redirect_uris: ["https://client.example/callback#fragment"] }) }), env, new URL("https://weread.example.test/register"));
+assert.equal(res.status, 400, "redirect URI fragments must be rejected");
 res = await oauthRoute(req("/register", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ client_name: "ChatGPT test", redirect_uris: ["https://client.example/callback"], token_endpoint_auth_method: "none" }) }), env, new URL("https://weread.example.test/register"));
 assert.equal(res.status, 201);
 const client = await res.json();
