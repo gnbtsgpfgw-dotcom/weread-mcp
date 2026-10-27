@@ -1197,11 +1197,11 @@ export default {
     // or /coread/* (those routes return above and keep their original guard).
     const auth = request.headers.get("authorization") || "";
     const got = auth.startsWith("Bearer ") ? auth.slice(7) : "";
-    let authorized = !!(env.OAUTH_DB && await verifyAccessToken(request, env, new URL(request.url).origin + "/mcp"));
+    let authorized = !!(env.OAUTH_DB && await verifyAccessToken(request, env, String(env.OAUTH_ISSUER || new URL(request.url).origin).replace(/\/$/, "") + "/mcp"));
     if (!authorized && env.MCP_AUTH_TOKEN && got === env.MCP_AUTH_TOKEN) authorized = true;
     if (!authorized && (env.MCP_AUTH_TOKEN || env.OAUTH_DB)) {
       const headers = env.OAUTH_DB ? {
-        "WWW-Authenticate": `Bearer resource_metadata="${new URL(request.url).origin}/.well-known/oauth-protected-resource/mcp"`,
+        "WWW-Authenticate": `Bearer resource_metadata="${String(env.OAUTH_ISSUER || new URL(request.url).origin).replace(/\/$/, "")}/.well-known/oauth-protected-resource/mcp"`,
       } : {};
       return json({ jsonrpc: "2.0", error: { code: -32001, message: "unauthorized" }, id: null }, 401, headers);
     }
