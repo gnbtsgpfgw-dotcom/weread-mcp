@@ -12,6 +12,7 @@ class MemoryD1 {
         if (sql.includes("FROM oauth_clients WHERE client_id")) return self.tables.clients.get(a[0]) || null;
         if (sql.includes("FROM oauth_pending WHERE handle")) return self.tables.pending.get(a[0]) || null;
         if (sql.includes("FROM oauth_codes WHERE code_hash")) return self.tables.codes.get(a[0]) || null;
+        if (sql.includes("FROM oauth_access WHERE token_hash")) return self.tables.access.get(a[0]) || null;
         if (sql.includes("FROM oauth_refresh WHERE token_hash")) return self.tables.refresh.get(a[0]) || null;
         if (sql.includes("COUNT(*) AS n")) return { n: self.tables.attempts.filter((x) => x.ip_hash === a[0] && x.attempted_at >= a[1]).length };
         return null;
@@ -55,7 +56,7 @@ const client = await res.json();
 
 const verifier = "a".repeat(43);
 const challenge = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier));
-const challengeText = btoa(String.fromCharCode(...new Uint8Array(challenge))).replace(/\\+/g, "-").replace(/\\//g, "_").replace(/=+$/g, "");
+const challengeText = btoa(String.fromCharCode(...new Uint8Array(challenge))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
 const authUrl = new URL("https://weread.example.test/authorize");
 for (const [k, v] of Object.entries({ response_type: "code", client_id: client.client_id, redirect_uri: "https://client.example/callback", state: "state-123", code_challenge: challengeText, code_challenge_method: "S256", resource: "https://weread.example.test/mcp", scope: "weread offline_access" })) authUrl.searchParams.set(k, v);
 res = await oauthRoute(req(authUrl.pathname + authUrl.search), env, authUrl);
