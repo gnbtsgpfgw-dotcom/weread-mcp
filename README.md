@@ -153,6 +153,35 @@ npm run start:env
 
 ---
 
+## ChatGPT OAuth for custom MCP (experimental)
+
+The Workers build supports OAuth 2.1 Authorization Code with PKCE S256, refresh tokens, Protected Resource Metadata, Authorization Server Metadata, and Dynamic Client Registration (DCR). OAuth state is stored in a dedicated D1 database. Existing COREAD_KV books, annotations, and bindings are left intact.
+
+### Cloudflare setup (before deployment)
+
+1. Create a dedicated D1 database and add this binding to wrangler.toml. Keep the existing COREAD_KV binding unchanged:
+
+   ~~~toml
+   [[d1_databases]]
+   binding = "OAUTH_DB"
+   database_name = "<database name you chose>"
+   database_id = "<ID returned by Cloudflare>"
+   ~~~
+
+2. Apply the schema migration. Use npx wrangler d1 migrations apply <database-name> --local for local development. Apply with --remote only when you are ready to provision production. This code change does not run a remote migration.
+
+3. Set the OAUTH_ISSUER Worker variable to the canonical HTTPS origin used for the ChatGPT connection, without a path or trailing slash. Keep MCP_AUTH_TOKEN configured for the dashboard and management API.
+
+4. Set separate OAuth login Secrets named OAUTH_USERNAME and OAUTH_PASSWORD. These are for the browser authorization page and are separate from MCP_AUTH_TOKEN. Authorization is denied until both are configured. Do not put secret values in wrangler.toml, code, or documentation.
+
+5. After a future deployment, check discovery, HTTPS, login/consent, token refresh, and that OAuth tokens remain rejected by /dashboard and /coread/*. No remote database migration, Secret change, or deployment is part of this code change.
+
+### ChatGPT client registration needs verification
+
+The authorization server exposes /register for DCR. A client can register its exact redirect URI and receive a server-generated client ID; this repository does not preassign or invent a ChatGPT Client ID or Client Secret. During a real ChatGPT connection test, verify whether ChatGPT calls DCR, requires manual pre-registration, and which token_endpoint_auth_method it sends. If ChatGPT only accepts pre-registered credentials and does not use DCR, implement the matching registration option after verifying the actual flow; do not fill in guessed OAuth parameters.
+
+OAuth tokens authorize /mcp only. The dashboard and all /coread/* endpoints continue to require the existing MCP_AUTH_TOKEN. Existing MCP clients can continue using that Bearer token.
+
 # 手机端接入（通用）
 
 在支持「远程 MCP」的 App 里添加服务器：
