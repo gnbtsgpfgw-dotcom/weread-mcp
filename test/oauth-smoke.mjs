@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { oauthRoute, verifyAccessToken } from "../src/oauth.js";
+import worker from "../src/index.js";
 
 class MemoryD1 {
   tables = { clients: new Map(), pending: new Map(), codes: new Map(), access: new Map(), refresh: new Map(), attempts: [] };
@@ -38,7 +39,7 @@ class MemoryD1 {
 }
 
 const db = new MemoryD1();
-const env = { OAUTH_DB: db, OAUTH_ISSUER: "https://weread.example.test", OAUTH_USERNAME: "owner", OAUTH_PASSWORD: "test-password" };
+const env = { OAUTH_DB: db, MCP_AUTH_TOKEN: "test-admin-token", OAUTH_ISSUER: "https://weread.example.test", OAUTH_USERNAME: "owner", OAUTH_PASSWORD: "test-password" };
 const req = (path, init = {}) => new Request("https://weread.example.test" + path, init);
 
 let res = await oauthRoute(req("/.well-known/oauth-protected-resource/mcp"), env, new URL("https://weread.example.test/.well-known/oauth-protected-resource/mcp"));
@@ -92,4 +93,15 @@ assert.notEqual(rotated.refresh_token, tokens.refresh_token);
 res = await oauthRoute(req("/token", { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: refreshForm }), env, new URL("https://weread.example.test/token"));
 assert.equal(res.status, 400, "refresh token must rotate once");
 
-console.log("OAuth metadata, DCR, PKCE, one-use code, resource binding, and refresh rotation passed.");
+
+const mcpRequest = (path, init = {}) => worker.fetch(new Request("https://weread.example.test" + path, init), env);
+res = await mcpRequest("/dashboard", { headers: { authorization: `Bearer ${tokens.access_token}` } });
+assert.equal(res.status, 403, "OAuth token must not grant dashboard access");
+res = await mcpRequest("/coread", { headers: { authorization: `Bearer ${tokens.access_token}` } });
+assert.equal(res.status, 401, "OAuth token must not grant coread management access");
+res = await mcpRequest("/mcp", { method: "POST", headers: { authorization: `Bearer ${tokens.access_token}`, "content-type": "application/json", accept: "application/json, text/event-stream" }, body: JSON.stringify({ jsonrpc: "2.0", id: 7, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "oauth-test", version: "1" } } }) });
+assert.equal(res.status, 200, "valid OAuth token must reach /mcp");
+res = await mcpRequest("/mcp", { method: "POST", headers: { authorization: "Bearer invalid-token", "content-type": "application/json", accept: "application/json, text/event-stream" }, body: "{}" });
+assert.equal(res.status, 401);
+assert.match(res.headers.get("www-authenticate") || "", /oauth-protected-resource/);
+\nconsole.log("OAuth discovery, DCR, PKCE, one-use codes, resource binding, refresh rotation, and management boundary passed.");
