@@ -6,7 +6,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { callGateway } from "./weread.js";
 import { buildDashboard, chaptersLookDegenerate, deriveChapters } from "./dashboard.js";
-import { oauthRoute, verifyAccessToken } from "./oauth.js";
+import { oauthRoute, verifyAccessToken, oauthResource } from "./oauth.js";
 
 // ---------------------------------------------------------------------------
 // 工具定义：每个 tool 薄封装一个微信读书官方网关接口。
@@ -1197,12 +1197,12 @@ export default {
     // or /coread/* (those routes return above and keep their original guard).
     const auth = request.headers.get("authorization") || "";
     const got = auth.startsWith("Bearer ") ? auth.slice(7) : "";
-    let authorized = !!(env.OAUTH_DB && await verifyAccessToken(request, env, String(env.OAUTH_ISSUER || new URL(request.url).origin).replace(/\/$/, "") + "/mcp"));
+    let authorized = !!(env.OAUTH_DB && await verifyAccessToken(request, env, oauthResource(env, request)));
     if (!authorized && env.MCP_AUTH_TOKEN && got === env.MCP_AUTH_TOKEN) authorized = true;
     if (!authorized && (env.MCP_AUTH_TOKEN || env.OAUTH_DB)) {
       const response = json({ jsonrpc: "2.0", error: { code: -32001, message: "unauthorized" }, id: null }, 401);
       if (env.OAUTH_DB) {
-        const issuer = String(env.OAUTH_ISSUER || new URL(request.url).origin).replace(/\/$/, "");
+        const issuer = new URL(oauthResource(env, request)).origin;
         response.headers.set("WWW-Authenticate", `Bearer resource_metadata="${issuer}/.well-known/oauth-protected-resource/mcp"`);
       }
       return response;
@@ -1222,3 +1222,4 @@ export default {
     }
   },
 };
+

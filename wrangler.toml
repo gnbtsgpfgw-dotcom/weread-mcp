@@ -37,9 +37,15 @@ binding = "COREAD_KV"
 id = "b2547ada6811440586d63a702ba18e2a"
 
 # OAuth state is isolated in D1. Create the database and apply
-# migrations/0001_oauth.sql before enabling the OAUTH_DB binding.
+# all pending files under migrations/ before enabling the OAUTH_DB binding.
 # Keep the existing COREAD_KV namespace; it stores book and annotation data.
+# Configure OAUTH_ISSUER as a non-secret Worker variable in Cloudflare,
+# or add it to a local .dev.vars file for `wrangler dev`. It must be the
+# canonical public HTTPS origin (no path or trailing slash).
+# [vars]
+# OAUTH_ISSUER = "https://weread.example.com"
 # [[d1_databases]]
 # binding = "OAUTH_DB"
 # database_name = "weread-mcp-oauth"
 # database_id = "<ID returned by Cloudflare when you create the D1 database>"
+

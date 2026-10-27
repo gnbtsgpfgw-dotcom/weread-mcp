@@ -11,8 +11,14 @@ const db = (env) => { if (!env.OAUTH_DB) throw new Error("OAuth D1 binding OAUTH
 const json = (v, status = 200, headers = {}) => new Response(JSON.stringify(v), { status, headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", pragma: "no-cache", ...headers } });
 const err = (error, status = 400, headers = {}) => json({ error }, status, headers);
 const same = (a, b) => { const x = enc.encode(String(a)); const y = enc.encode(String(b)); if (x.length !== y.length) return false; let d = 0; for (let i = 0; i < x.length; i++) d |= x[i] ^ y[i]; return d === 0; };
-const issuerOf = (env, request) => String(env.OAUTH_ISSUER || new URL(request.url).origin).replace(/\/$/, "");
+export function issuerOf(env, request) {
+  const value = String(env.OAUTH_ISSUER || new URL(request.url).origin);
+  const parsed = new URL(value);
+  if (parsed.pathname !== "/" || parsed.search || parsed.hash || parsed.username || parsed.password || parsed.origin !== value.replace(/\/$/, "") || (env.OAUTH_ISSUER && parsed.protocol !== "https:")) throw new Error("OAUTH_ISSUER must be a canonical HTTPS origin without a path, query, or fragment");
+  return parsed.origin;
+}
 const resourceOf = (env, request) => issuerOf(env, request) + "/mcp";
+export const oauthResource = resourceOf;
 const protectedMetadata = (env, request) => ({
   resource: resourceOf(env, request),
   authorization_servers: [issuerOf(env, request)],
@@ -72,12 +78,23 @@ async function readClient(dbx, clientId) {
 async function register(request, env) {
   if (request.method !== "POST") return err("invalid_request", 405);
   let m;
-  try { m = await request.json(); } catch { return err("invalid_client_metadata"); }
+  let raw;
+  try { raw = await request.text(); } catch { return err("invalid_client_metadata"); }
+  if (raw.length > 16384) return err("invalid_client_metadata");
+  try { m = JSON.parse(raw); } catch { return err("invalid_client_metadata"); }
   if (!Array.isArray(m.redirect_uris) || !m.redirect_uris.length || m.redirect_uris.length > 20 || m.redirect_uris.some((u) => typeof u !== "string" || !validRedirect(u))) return err("invalid_redirect_uri");
   if (m.grant_types && (!Array.isArray(m.grant_types) || m.grant_types.some((v) => !["authorization_code", "refresh_token"].includes(v)))) return err("invalid_client_metadata");
   if (m.response_types && (!Array.isArray(m.response_types) || m.response_types.some((v) => v !== "code"))) return err("invalid_client_metadata");
   const method = m.token_endpoint_auth_method || "none";
   if (!["none", "client_secret_basic", "client_secret_post"].includes(method)) return err("invalid_client_metadata");
+  const ipHash = await hash(request.headers.get("CF-Connecting-IP") || "unknown");
+  const d = db(env);
+  const windowStart = Math.floor(now() / 900) * 900;
+  await d.prepare("DELETE FROM oauth_dcr_limits WHERE window_start < ?").bind(windowStart).run();
+  const allowed = await d.prepare("INSERT INTO oauth_dcr_limits(ip_hash,window_start,count) VALUES(?,?,1) ON CONFLICT(ip_hash,window_start) DO UPDATE SET count=count+1 WHERE count<10 RETURNING count").bind(ipHash, windowStart).first();
+  if (!allowed) return err("temporarily_unavailable", 429, { "retry-after": "900" });
+  const total = await d.prepare("SELECT COUNT(*) AS n FROM oauth_clients").first();
+  if ((total?.n || 0) >= 5000) return err("temporarily_unavailable", 503);
   const clientId = random(24);
   const clientSecret = method === "none" ? null : random(32);
   const redirects = [...new Set(m.redirect_uris)];
@@ -113,7 +130,7 @@ async function authorize(request, env, url) {
     const handle = random();
     await dbx.prepare("INSERT INTO oauth_pending(handle,payload,expires_at) VALUES(?,?,?)").bind(handle, JSON.stringify(pending), now() + CODE_TTL).run();
     const redirect = new URL(pending.redirect_uri);
-    return html(`<main><h1>Authorize Weread MCP</h1><p>Client: <strong>${escapeHtml(pending.client_name)}</strong></p><p>Requested access: <code>${escapeHtml(pending.scope)}</code></p><p>Redirect destination: <code>${escapeHtml(redirect.origin + redirect.pathname)}</code></p><form method="post" action="/authorize"><input type="hidden" name="handle" value="${handle}"><label>OAuth username <input name="username" autocomplete="username" required></label><br><label>OAuth password <input type="password" name="password" autocomplete="current-password" required></label><br><button name="approve" value="yes">Sign in and authorize</button></form></main>`, 200, { "set-cookie": `oauth_pending=${handle}; HttpOnly; Secure; SameSite=Lax; Path=/authorize; Max-Age=${CODE_TTL}` });
+    return html(`<main><h1>Authorize Weread MCP</h1><p>Client: <strong>${escapeHtml(pending.client_name)}</strong></p><p>Requested access: <code>${escapeHtml(pending.scope)}</code></p><p>Redirect destination: <code>${escapeHtml(redirect.origin + redirect.pathname)}</code></p><form method="post" action="/authorize"><input type="hidden" name="handle" value="${handle}"><label>OAuth username <input name="username" autocomplete="username" required></label><br><label>OAuth password <input type="password" name="password" autocomplete="current-password" required></label><br><button name="approve" value="yes">Sign in and authorize</button><button name="approve" value="no" formnovalidate>拒绝</button></form></main>`, 200, { "set-cookie": `oauth_pending=${handle}; HttpOnly; Secure; SameSite=Lax; Path=/authorize; Max-Age=${CODE_TTL}` });
   }
   if (request.method !== "POST") return err("invalid_request", 405);
   let fields;
@@ -122,20 +139,27 @@ async function authorize(request, env, url) {
   if (!handle || !same(handle, cookie(request, "oauth_pending"))) return html("<h1>Authorization session expired</h1><p>Restart the connection from ChatGPT.</p>", 400, { "set-cookie": clearPendingCookie });
   const pendingRow = await dbx.prepare("SELECT payload,expires_at FROM oauth_pending WHERE handle=?").bind(handle).first();
   if (!pendingRow || pendingRow.expires_at < now()) return html("<h1>Authorization session expired</h1><p>Restart the connection from ChatGPT.</p>", 400, { "set-cookie": clearPendingCookie });
+  if (fields.approve !== "yes") {
+    const denied = await dbx.prepare("DELETE FROM oauth_pending WHERE handle=? AND expires_at>=? RETURNING payload").bind(handle, now()).first();
+    if (!denied) return html("<h1>Authorization session expired</h1><p>Restart the connection from ChatGPT.</p>", 400, { "set-cookie": clearPendingCookie });
+    const payload = JSON.parse(denied.payload);
+    return safeRedirect(payload.redirect_uri, { error: "access_denied", state: payload.state, iss: issuerOf(env, request) });
+  }
   if (!env.OAUTH_USERNAME || !env.OAUTH_PASSWORD) return html("<h1>OAuth login is not configured</h1>", 503, { "set-cookie": clearPendingCookie });
   const ip = request.headers.get("CF-Connecting-IP") || "unknown";
   const ipHash = await hash(ip);
   await dbx.prepare("DELETE FROM oauth_login_attempts WHERE attempted_at < ?").bind(now() - 900).run();
   const count = await dbx.prepare("SELECT COUNT(*) AS n FROM oauth_login_attempts WHERE ip_hash=? AND attempted_at>=?").bind(ipHash, now() - 900).first();
   if ((count?.n || 0) >= 10) return html("<h1>Too many attempts</h1><p>Wait 15 minutes and restart.</p>", 429, { "set-cookie": clearPendingCookie });
-  if (!same(fields.username, env.OAUTH_USERNAME) || !same(fields.password, env.OAUTH_PASSWORD) || fields.approve !== "yes") {
+  if (!same(fields.username, env.OAUTH_USERNAME) || !same(fields.password, env.OAUTH_PASSWORD)) {
     await dbx.prepare("INSERT INTO oauth_login_attempts(ip_hash,attempted_at) VALUES(?,?)").bind(ipHash, now()).run();
     return html("<h1>Sign-in failed</h1><p>Check the configured OAuth account and try again.</p>", 401, { "set-cookie": clearPendingCookie });
   }
-  const payload = JSON.parse(pendingRow.payload);
+  const consumed = await dbx.prepare("DELETE FROM oauth_pending WHERE handle=? AND expires_at>=? RETURNING payload").bind(handle, now()).first();
+  if (!consumed) return html("<h1>Authorization session expired</h1><p>Restart the connection from ChatGPT.</p>", 400, { "set-cookie": clearPendingCookie });
+  const payload = JSON.parse(consumed.payload);
   const code = random(32);
   await dbx.prepare("INSERT INTO oauth_codes(code_hash,payload,expires_at) VALUES(?,?,?)").bind(await hash(code), JSON.stringify(payload), now() + CODE_TTL).run();
-  await dbx.prepare("DELETE FROM oauth_pending WHERE handle=?").bind(handle).run();
   return safeRedirect(payload.redirect_uri, { code, state: payload.state, iss: issuerOf(env, request) });
 }
 function escapeHtml(s) { return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]); }
@@ -161,11 +185,11 @@ async function clientAuth(request, body, env) {
   if (!secret || !client.client_secret_hash || !same(await hash(secret), client.client_secret_hash)) return null;
   return client;
 }
-async function issueTokens(env, clientId, resource, scope) {
+async function issueTokens(env, clientId, resource, scope, familyId = random()) {
   const dbx = db(env), accessToken = random(32), refreshToken = random(40), t = now();
   await dbx.batch([
-    dbx.prepare("INSERT INTO oauth_access(token_hash,client_id,resource,scope,expires_at) VALUES(?,?,?,?,?)").bind(await hash(accessToken), clientId, resource, scope, t + ACCESS_TTL),
-    dbx.prepare("INSERT INTO oauth_refresh(token_hash,client_id,resource,scope,expires_at) VALUES(?,?,?,?,?)").bind(await hash(refreshToken), clientId, resource, scope, t + REFRESH_TTL),
+    dbx.prepare("INSERT INTO oauth_access(token_hash,family_id,client_id,resource,scope,expires_at) VALUES(?,?,?,?,?,?)").bind(await hash(accessToken), familyId, clientId, resource, scope, t + ACCESS_TTL),
+    dbx.prepare("INSERT INTO oauth_refresh(token_hash,family_id,client_id,resource,scope,expires_at) VALUES(?,?,?,?,?,?)").bind(await hash(refreshToken), familyId, clientId, resource, scope, t + REFRESH_TTL),
   ]);
   return json({ access_token: accessToken, token_type: "Bearer", expires_in: ACCESS_TTL, refresh_token: refreshToken, scope });
 }
@@ -190,11 +214,34 @@ async function token(request, env) {
   }
   if (fields.grant_type === "refresh_token") {
     const tokenHash = await hash(fields.refresh_token || "");
-    const row = await db(env).prepare("SELECT client_id,resource,scope,expires_at FROM oauth_refresh WHERE token_hash=?").bind(tokenHash).first();
-    if (!row || row.client_id !== client.client_id || row.expires_at < now()) return err("invalid_grant");
-    const deleted = await db(env).prepare("DELETE FROM oauth_refresh WHERE token_hash=? AND expires_at>=?").bind(tokenHash, now()).run();
-    if (!deleted.meta?.changes) return err("invalid_grant");
-    return issueTokens(env, row.client_id, row.resource, row.scope);
+    const dbx = db(env);
+    const row = await dbx.prepare("SELECT family_id,client_id,resource,scope,expires_at FROM oauth_refresh WHERE token_hash=?").bind(tokenHash).first();
+    if (!row) {
+      const replay = await dbx.prepare("SELECT family_id FROM oauth_refresh_replays WHERE token_hash=? AND client_id=? AND expires_at>=?").bind(tokenHash, client.client_id, now()).first();
+      if (replay) await dbx.batch([
+        dbx.prepare("DELETE FROM oauth_access WHERE family_id=?").bind(replay.family_id),
+        dbx.prepare("DELETE FROM oauth_refresh WHERE family_id=?").bind(replay.family_id),
+      ]);
+      return err("invalid_grant");
+    }
+    if (row.client_id !== client.client_id || row.expires_at < now() || (fields.resource && fields.resource !== row.resource)) return err("invalid_grant");
+    const consumerId = random(), accessToken = random(32), refreshToken = random(40), t = now();
+    const accessHash = await hash(accessToken), refreshHash = await hash(refreshToken);
+    const result = await dbx.batch([
+      dbx.prepare("INSERT INTO oauth_refresh_replays(token_hash,family_id,client_id,expires_at,consumer_id) SELECT token_hash,family_id,client_id,expires_at,? FROM oauth_refresh WHERE token_hash=? ON CONFLICT(token_hash) DO NOTHING").bind(consumerId, tokenHash),
+      dbx.prepare("DELETE FROM oauth_refresh WHERE token_hash=? AND expires_at>=?").bind(tokenHash, now()),
+      dbx.prepare("INSERT INTO oauth_access(token_hash,family_id,client_id,resource,scope,expires_at) SELECT ?,?,?,?,?,? WHERE EXISTS(SELECT 1 FROM oauth_refresh_replays WHERE token_hash=? AND consumer_id=?)").bind(accessHash, row.family_id, row.client_id, row.resource, row.scope, t + ACCESS_TTL, tokenHash, consumerId),
+      dbx.prepare("INSERT INTO oauth_refresh(token_hash,family_id,client_id,resource,scope,expires_at) SELECT ?,?,?,?,?,? WHERE EXISTS(SELECT 1 FROM oauth_refresh_replays WHERE token_hash=? AND consumer_id=?)").bind(refreshHash, row.family_id, row.client_id, row.resource, row.scope, t + REFRESH_TTL, tokenHash, consumerId),
+    ]);
+    if (!result[1]?.meta?.changes) {
+      const replay = await dbx.prepare("SELECT family_id FROM oauth_refresh_replays WHERE token_hash=? AND client_id=? AND expires_at>=?").bind(tokenHash, client.client_id, now()).first();
+      if (replay) await dbx.batch([
+        dbx.prepare("DELETE FROM oauth_access WHERE family_id=?").bind(replay.family_id),
+        dbx.prepare("DELETE FROM oauth_refresh WHERE family_id=?").bind(replay.family_id),
+      ]);
+      return err("invalid_grant");
+    }
+    return json({ access_token: accessToken, token_type: "Bearer", expires_in: ACCESS_TTL, refresh_token: refreshToken, scope: row.scope });
   }
   return err("unsupported_grant_type");
 }
@@ -215,3 +262,4 @@ export async function verifyAccessToken(request, env, expectedResource) {
   const row = await db(env).prepare("SELECT resource,expires_at FROM oauth_access WHERE token_hash=?").bind(await hash(raw)).first();
   return !!row && row.resource === expectedResource && row.expires_at >= now();
 }
+

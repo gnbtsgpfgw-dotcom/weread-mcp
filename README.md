@@ -170,7 +170,7 @@ The Workers build supports OAuth 2.1 Authorization Code with PKCE S256, refresh 
 
 2. Apply the schema migration. Use npx wrangler d1 migrations apply <database-name> --local for local development. Apply with --remote only when you are ready to provision production. This code change does not run a remote migration.
 
-3. Set the OAUTH_ISSUER Worker variable to the canonical HTTPS origin used for the ChatGPT connection, without a path or trailing slash. Keep MCP_AUTH_TOKEN configured for the dashboard and management API.
+3. Set the non-secret `OAUTH_ISSUER` Worker variable to the canonical HTTPS origin used for the ChatGPT connection, without a path or trailing slash (for example, add `[vars]` and `OAUTH_ISSUER = "https://weread.example.com"` to `wrangler.toml`, or set the variable in Worker settings). Discovery, authorization responses, and `/mcp` audience checks all use this same origin. Keep `MCP_AUTH_TOKEN` configured for the dashboard and management API.
 
 4. Set separate OAuth login Secrets named OAUTH_USERNAME and OAUTH_PASSWORD. These are for the browser authorization page and are separate from MCP_AUTH_TOKEN. Authorization is denied until both are configured. Do not put secret values in wrangler.toml, code, or documentation.
 
@@ -420,3 +420,4 @@ node test/smoke-dashboard-dom.mjs  # 只渲染批注段 / 划线≠评论 / 章�
 # 开源协议
 
 [MIT](LICENSE) © 2026 weread-mcp-worker contributors
+
