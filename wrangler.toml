@@ -35,3 +35,11 @@ workers_dev = true
 [[kv_namespaces]]
 binding = "COREAD_KV"
 id = "b2547ada6811440586d63a702ba18e2a"
+
+# OAuth state is isolated in D1. Create the database and apply
+# migrations/0001_oauth.sql before enabling the OAUTH_DB binding.
+# Keep the existing COREAD_KV namespace; it stores book and annotation data.
+# [[d1_databases]]
+# binding = "OAUTH_DB"
+# database_name = "weread-mcp-oauth"
+# database_id = "<ID returned by Cloudflare when you create the D1 database>"
