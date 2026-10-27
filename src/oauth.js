@@ -62,7 +62,8 @@ function safeRedirect(uri, values) {
 function validRedirect(uri) {
   try {
     const u = new URL(uri);
-    return u.protocol === "https:" || (u.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(u.hostname));
+    const hostAllowed = u.protocol === "https:" || (u.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(u.hostname));
+    return hostAllowed && !u.username && !u.password && !u.hash;
   } catch { return false; }
 }
 async function readClient(dbx, clientId) {
@@ -141,7 +142,9 @@ function escapeHtml(s) { return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&a
 async function clientAuth(request, body, env) {
   let id = String(body.client_id || ""), secret = String(body.client_secret || "");
   const header = request.headers.get("authorization") || "";
-  if (header.startsWith("Basic ")) {
+  const basic = header.startsWith("Basic ");
+  if (header && !basic) return null;
+  if (basic) {
     try {
       const decoded = atob(header.slice(6));
       const i = decoded.indexOf(":");
@@ -152,7 +155,9 @@ async function clientAuth(request, body, env) {
   }
   const client = await readClient(db(env), id);
   if (!client) return null;
-  if (client.auth_method === "none") return secret ? null : client;
+  if (client.auth_method === "none") return !basic && !secret ? client : null;
+  if (client.auth_method === "client_secret_basic" && !basic) return null;
+  if (client.auth_method === "client_secret_post" && basic) return null;
   if (!secret || !client.client_secret_hash || !same(await hash(secret), client.client_secret_hash)) return null;
   return client;
 }
