@@ -6,6 +6,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { callGateway } from "./weread.js";
 import { buildDashboard, chaptersLookDegenerate, deriveChapters } from "./dashboard.js";
+import { oauthRoute, verifyAccessToken } from "./oauth.js";
 
 // ---------------------------------------------------------------------------
 // 工具定义：每个 tool 薄封装一个微信读书官方网关接口。
@@ -1160,6 +1161,8 @@ export default {
     const url = new URL(request.url);
 
     if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
+    const oauthResponse = await oauthRoute(request, env, url);
+    if (oauthResponse) return withCors(oauthResponse);
     if (url.pathname === "/" || url.pathname === "/healthz") {
       return json({ ok: true, name: "weread-mcp", endpoint: "/mcp", dashboard: "/dashboard", coread: "/coread", notes: "/coread/notes", search: "/coread/search", sync: "/coread/sync" });
     }
@@ -1189,13 +1192,18 @@ export default {
     }
     if (url.pathname !== "/mcp") return json({ error: "not found" }, 404);
 
-    // Bearer 鉴权：配置了 MCP_AUTH_TOKEN 就强制校验
-    if (env.MCP_AUTH_TOKEN) {
-      const auth = request.headers.get("authorization") || "";
-      const got = auth.startsWith("Bearer ") ? auth.slice(7) : "";
-      if (got !== env.MCP_AUTH_TOKEN) {
-        return json({ jsonrpc: "2.0", error: { code: -32001, message: "unauthorized" }, id: null }, 401);
-      }
+    // OAuth access tokens are resource-bound. The legacy admin token remains
+    // available for existing MCP clients, but never grants access to /dashboard
+    // or /coread/* (those routes return above and keep their original guard).
+    const auth = request.headers.get("authorization") || "";
+    const got = auth.startsWith("Bearer ") ? auth.slice(7) : "";
+    let authorized = !!(env.OAUTH_DB && await verifyAccessToken(request, env, new URL(request.url).origin + "/mcp"));
+    if (!authorized && env.MCP_AUTH_TOKEN && got === env.MCP_AUTH_TOKEN) authorized = true;
+    if (!authorized && (env.MCP_AUTH_TOKEN || env.OAUTH_DB)) {
+      const headers = env.OAUTH_DB ? {
+        "WWW-Authenticate": `Bearer resource_metadata="${new URL(request.url).origin}/.well-known/oauth-protected-resource/mcp"`,
+      } : {};
+      return json({ jsonrpc: "2.0", error: { code: -32001, message: "unauthorized" }, id: null }, 401, headers);
     }
 
     try {
